@@ -1,0 +1,127 @@
+#!/bin/bash
+
+echo ""
+
+DEBUGLOG=/tmp/rvm_package.log
+rm -rf $DEBUGLOG && touch $DEBUGLOG
+
+callfail () {
+  if [[ $1 != 0 ]]; then
+    echo "fail"
+    echo ""
+    tail -10 $DEBUGLOG
+    echo "ceheck $DEBUGLOG for details"
+    set -e
+    exit 1
+  fi
+}
+
+RVM_USER=$(whoami)
+echo "RVM USER............${RVM_USER}"
+
+RVM_GROUP=$(id -gn)
+echo "RVM GROUP...........${RVM_GROUP}"
+
+RVM_USER_HOME=${HOME}
+echo "RVM USER HOME.......${RVM_USER_HOME}"
+
+: ${RUBY_VERSIONS:?"Need to set RUBY_VERSIONS non-empty"}
+rubies=$(echo ${RUBY_VERSIONS} | tr "," " ")
+echo "RUBY VERSIONS.......${rubies[@]}"
+
+RUBY_GEMS="${RUBY_GEMS},fpm"
+gems=$(echo ${RUBY_GEMS} | tr "," " ")
+echo "RUBY GEMS...........${gems[@]}"
+
+: ${PACKAGE_NAME:?"Need to set PACKAGE_NAME non-empty"}
+echo "PACKAGE NAME........${PACKAGE_NAME}"
+
+: ${PACKAGE_VERSION:?"Need to set PACKAGE_VERSION non-empty"}
+echo "PACKAGE VERSION.....${PACKAGE_VERSION}"
+
+timestamp=$(date +%s)
+echo "PACKAGE ITERATION...${timestamp}"
+
+deps=$(echo ${PACKAGE_DEPS} | tr "," " ")
+echo "PACKAGE DEPS........${deps}"
+deps_str=""
+for d in ${deps}; do deps_str="${deps_str} -d ${d}"; done
+
+echo ""
+printf "download and install rvm....."
+gpg --keyserver hkp://keys.gnupg.net --recv-keys 409B6B1796C275462A1703113804BB82D39DC0E3 >>$DEBUGLOG 2>&1 \
+  && \curl -sSL https://get.rvm.io | bash -s stable >>$DEBUGLOG 2>&1
+callfail $?
+echo "ok"
+
+echo "update PATH.....ok"
+source ${RVM_USER_HOME}/.rvm/scripts/rvm
+export PATH=$PATH:${RVM_USER_HOME}/.rvm/bin
+
+echo "disable rvm autolibs.....ok"
+rvm autolibs disable
+
+echo "install rubies"
+for r in ${rubies}; do
+  printf "ruby ${r}....."
+  rvm install ${r} >>$DEBUGLOG 2>&1
+  callfail $?
+  echo "ok"
+
+  printf "gems (${gems[@]})....."
+  rvm ${r} >>$DEBUGLOG 2>&1 \
+    && gem update --system >>$DEBUGLOG 2>&1 \
+    && gem install ${gems[@]} >>$DEBUGLOG 2>&1
+  callfail $?
+  echo "ok"
+done
+
+echo "clean tmp rvm folders.....ok"
+rm -rf ./rvm/src/* ./rvm/log/* ./rvm/tmp/* ./rvm/archives/* ./rvm/gem-cache/*
+
+echo "enabling rvm for user.....ok"
+chown -R ${RVM_USER} ${RVM_USER_HOME}/.rvm
+
+# After scripts
+echo "create after install script.....ok"
+echo "#!/bin/bash" > after-install.sh
+echo "cat <<EOT1 >> ${RVM_USER_HOME}/.bashrc" >> after-install.sh
+echo "PATH=\$PATH:${RVM_USER_HOME}/.rvm/bin" >> after-install.sh
+echo "EOT1" >> after-install.sh
+echo "cat <<EOT2 >> ${RVM_USER_HOME}/.bash_profile" >> after-install.sh
+echo "[[ -s '${RVM_USER_HOME}/.rvm/scripts/rvm' ]] && source ${RVM_USER_HOME}/.rvm/scripts/rvm" >> after-install.sh
+echo "EOT2" >> after-install.sh
+echo "chown ${RVM_USER}:${RVM_GROUP} ${RVM_USER_HOME}/.bashrc" >> after-install.sh
+echo "chown ${RVM_USER}:${RVM_GROUP} ${RVM_USER_HOME}/.bash_profile" >> after-install.sh
+echo "chown -R ${RVM_USER}:${RVM_GROUP} ${RVM_USER_HOME}/.rvm" >> after-install.sh
+
+echo "create after remove script.....ok"
+echo "#!/bin/bash" > after-remove.sh
+echo "sed -i 's/.*rvm.*//g' ${RVM_USER_HOME}/.bashrc" >> after-remove.sh
+echo "sed -i 's/.*rvm.*//g' ${RVM_USER_HOME}/.bash_profile" >> after-remove.sh
+
+printf "package rpm....."
+rvm ${rubies[0]} >>$DEBUGLOG 2>&1 && \
+  fpm -t rpm \
+  -s dir \
+  -C ${RVM_USER_HOME} \
+  --prefix ${RVM_USER_HOME} \
+  -n ${PACKAGE_NAME} \
+  -v ${PACKAGE_VERSION} \
+  --iteration ${timestamp} \
+  -d rpm-build \
+  -d openssl \
+  -d libyaml \
+  ${deps_str} \
+  -a noarch \
+  --after-install after-install.sh \
+  --after-remove after-remove.sh \
+  --rpm-user ${RVM_USER} \
+  --rpm-group ${RVM_GROUP} \
+  .rvm >>$DEBUGLOG 2>&1
+callfail $?
+echo "ok"
+
+echo ""
+echo "resulting rpm:"
+ls -lh *.rpm
