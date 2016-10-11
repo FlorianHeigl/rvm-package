@@ -34,7 +34,7 @@ Run docker container from rvm-package image:
         -e PACKAGE_NAME=rvm-test \
         -e PACKAGE_VERSION=1 \
         -v $(pwd)/out:/tmp/out \
-        rvm
+        rvm-package
 
     # Resulting RPM
     $ ls -lh ./out
